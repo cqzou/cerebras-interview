@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Cerebras interviewer</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="bg-[#faf9f6] min-h-screen">
+    <div class="noise"></div>
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+    
+    <div class="container max-w-3xl mx-auto p-8 my-8">
+        <h1 class="text-4xl font-semibold text-gray-800 mb-8">
+            Cerebras interviewer
+        </h1>
+        
+        <div class="space-y-6">
+            <div class="flex items-center space-x-4">
+                <label for="topic" class="text-gray-700 font-medium">
+                    Topic:
+                </label>
+                <input type="text" 
+                       id="topic" 
+                       value="thoughts on adobo"
+                       class="flex-1 px-4 py-2 rounded-lg border border-gray-200 
+                              focus:outline-none focus:ring-2 focus:ring-blue-500 
+                              focus:border-transparent">
+            </div>
+
+            <div id="transcript" 
+                 class="transcript h-96 overflow-y-auto p-6 space-y-4">
+            </div>
+            
+            <div class="flex justify-between items-center">
+                <div class="space-x-4">
+                    <button id="startButton" class="btn btn-primary">
+                        Start
+                    </button>
+                    <button id="recordButton" class="btn btn-record hidden">
+                        Record
+                    </button>
+                    <button id="endButton" class="btn btn-end">
+                        End
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let context = "";
+        let isRecording = false;
+        let hasStarted = false;
+        let mediaRecorder = null;
+        let audioChunks = [];
+        
+        const startButton = document.getElementById('startButton');
+        const recordButton = document.getElementById('recordButton');
+        const transcript = document.getElementById('transcript');
+        const endButton = document.getElementById('endButton');
+        
+        async function setupRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                
+                mediaRecorder.ondataavailable = (event) => {
+                    audioChunks.push(event.data);
+                };
+                
+                mediaRecorder.onstop = async () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                    audioChunks = [];
+                    
+                    const formData = new FormData();
+                    formData.append('audio', audioBlob);
+                    
+                    const response = await fetch('/stop_recording', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (data.text) {
+                        addToTranscript('You: ' + data.text);
+                        context += '\nCandidate: ' + data.text + '\n';
+                        
+                        try {
+                            const text = await getInterviewerResponse(
+                                context,
+                                document.getElementById('topic').value,
+                                false
+                            );
+                            
+                            addToTranscript('Interviewer: ' + text);
+                            context += '\nInterviewer: ' + text + '\n';
+                            
+                            setTimeout(() => {
+                                recordButton.textContent = 'Record';
+                                recordButton.disabled = false;
+                                isRecording = false;
+                            }, 500);
+                        } catch (error) {
+                            console.error("Error getting interviewer response:", error);
+                            alert("Failed to get interviewer response. Please try again.");
+                            recordButton.textContent = 'Record';
+                            recordButton.disabled = false;
+                            isRecording = false;
+                        }
+                    }
+                };
+                
+            } catch (err) {
+                console.error('Error accessing microphone:', err);
+                alert('Error accessing microphone. Please ensure microphone permissions are granted.');
+            }
+        }
+        
+        async function toggleRecording() {
+            if (!mediaRecorder) {
+                await setupRecording();
+            }
+            
+            if (!isRecording) {
+                audioChunks = [];
+                mediaRecorder.start();
+                recordButton.textContent = 'stop';
+                isRecording = true;
+            } else {
+                mediaRecorder.stop();
+                recordButton.disabled = true;
+            }
+        }
+        
+        async function getInterviewerResponse(context, topic, is_initial, maxRetries = 3) {
+            for (let attempt = 0; attempt < maxRetries; attempt++) {
+                try {
+                    const response = await fetch('/get_response', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            context: context,
+                            topic: topic,
+                            is_initial: is_initial
+                        })
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    
+                    const data = await response.json();
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                    
+                    if (!data.text || data.text.trim().length === 0) {
+                        throw new Error("Empty response text");
+                    }
+                    
+                    return data.text;
+                } catch (error) {
+                    console.error(`Attempt ${attempt + 1}/${maxRetries} failed:`, error);
+                    if (attempt === maxRetries - 1) {
+                        throw error;
+                    }
+                    await new Promise(resolve => setTimeout(resolve, 1000)); // Wait before retry
+                }
+            }
+        }
+        
+        async function startInterview() {
+            try {
+                startButton.disabled = true;
+                const text = await getInterviewerResponse(
+                    context,
+                    document.getElementById('topic').value,
+                    true
+                );
+                
+                addToTranscript('Interviewer: ' + text);
+                context += '\nInterviewer: ' + text + '\n';
+                hasStarted = true;
+                startButton.style.display = 'none';
+                recordButton.style.display = 'inline-block';
+                recordButton.disabled = false;
+                
+            } catch (error) {
+                console.error("Error starting interview:", error);
+                startButton.disabled = false;
+                alert("Failed to start interview. Please try again.");
+            }
+        }
+        
+        function addToTranscript(text) {
+            const p = document.createElement('p');
+            p.textContent = text;
+            transcript.appendChild(p);
+            transcript.scrollTop = transcript.scrollHeight;
+        }
+        
+        async function endInterview() {
+            if (isRecording) {
+                await toggleRecording();
+            }
+            
+            const response = await fetch('/save_transcript', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    transcript: Array.from(transcript.children)
+                        .map(p => p.textContent)
+                        .join('\n')
+                })
+            });
+            
+            if (response.ok) {
+                const data = await response.json();
+                addToTranscript(
+                    `Interview ended. Saved as: ${data.filename}`
+                );
+                recordButton.disabled = true;
+                endButton.disabled = true;
+            }
+        }
+        
+        startButton.addEventListener('click', startInterview);
+        recordButton.addEventListener('click', toggleRecording);
+        endButton.addEventListener('click', endInterview);
+    </script>
+</body>
+</html> 
